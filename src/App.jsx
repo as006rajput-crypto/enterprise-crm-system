@@ -1,8 +1,8 @@
-
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 const API_URL = "http://localhost:5000/api/leads";
+const HEALTH_URL = "http://localhost:5000/api/health";
 
 const statuses = ["New", "Contacted", "Qualified", "Won", "Lost"];
 
@@ -14,292 +14,1589 @@ const navItems = [
   { name: "Analytics", icon: "▥" },
 ];
 
+const emptyForm = {
+  name: "",
+  company: "",
+  email: "",
+  status: "New",
+  followUpAt: "",
+  followUpNotes: "",
+  dealValue: "0",
+};
+
 function normalizeLead(lead) {
   return {
     ...lead,
     id: lead._id || lead.id,
+    name: lead.name || "",
+    company: lead.company || "",
+    email: lead.email || "",
+    status: statuses.includes(lead.status) ? lead.status : "New",
+    followUpAt: lead.followUpAt || "",
+    followUpNotes: lead.followUpNotes || "",
+    dealValue: Number(lead.dealValue) || 0,
   };
+}
+
+function getLeadList(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.leads)) return payload.leads;
+  if (Array.isArray(payload?.data)) return payload.data;
+  return [];
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function formatDateTime(value) {
+  if (!value) return "Not scheduled";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Invalid date";
+
+  return date.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function toLocalDateTimeInput(value) {
+  if (!value) return "";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const local = new Date(
+    date.getTime() - date.getTimezoneOffset() * 60000
+  );
+
+  return local.toISOString().slice(0, 16);
+}
+
+function formatCurrency(value) {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(Number(value) || 0);
+}
+
+function getInitials(name) {
+  return (name || "?")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("");
+}
+
+function getErrorMessage(payload, fallback) {
+  return payload?.message || payload?.error || fallback;
+}
+
+function getFollowUpState(value) {
+  if (!value) return "unscheduled";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "unscheduled";
+
+  return date.getTime() < Date.now() ? "overdue" : "upcoming";
+}
+
+/* MONTHLY LEAD ACTIVITY CHART */
+
+function MonthlyLeadChart({ monthlyData }) {
+  const width = 600;
+  const height = 220;
+  const paddingX = 12;
+  const paddingTop = 16;
+  const paddingBottom = 28;
+
+  const maxValue = Math.max(
+    4,
+    ...monthlyData.map((item) => item.count)
+  );
+
+  const scaleMax = Math.ceil(maxValue / 4) * 4;
+  const chartHeight = height - paddingTop - paddingBottom;
+
+  const points = monthlyData.map((item, index) => {
+    const x =
+      monthlyData.length <= 1
+        ? width / 2
+        : paddingX +
+          (index * (width - paddingX * 2)) /
+            (monthlyData.length - 1);
+
+    const y =
+      paddingTop +
+      chartHeight -
+      (item.count / scaleMax) * chartHeight;
+
+    return { x, y, ...item };
+  });
+
+  const linePath = points
+    .map(
+      (point, index) =>
+        `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`
+    )
+    .join(" ");
+
+  const areaPath = points.length
+    ? `${linePath} L ${points[points.length - 1].x} ${
+        height - paddingBottom
+      } L ${points[0].x} ${height - paddingBottom} Z`
+    : "";
+
+  const gridLevels = [4, 3, 2, 1, 0].map(
+    (level) => (scaleMax * level) / 4
+  );
+
+  return (
+    <div className="chart">
+      <div className="chart-y-labels">
+        {gridLevels.map((level, index) => (
+          <span key={`${level}-${index}`}>{Math.round(level)}</span>
+        ))}
+      </div>
+
+      <div className="chart-area">
+        {gridLevels.map((level, index) => (
+          <div
+            className="chart-gridline"
+            key={`${level}-${index}`}
+            style={{ top: `${index * 25}%` }}
+          />
+        ))}
+
+        <svg
+          className="chart-svg"
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          role="img"
+          aria-label="Monthly lead creation chart"
+        >
+          <defs>
+            <linearGradient
+              id="leadChartGradient"
+              x1="0"
+              y1="0"
+              x2="0"
+              y2="1"
+            >
+              <stop
+                offset="0%"
+                stopColor="#6478ff"
+                stopOpacity="0.32"
+              />
+              <stop
+                offset="100%"
+                stopColor="#6478ff"
+                stopOpacity="0.02"
+              />
+            </linearGradient>
+          </defs>
+
+          {areaPath && (
+            <path d={areaPath} fill="url(#leadChartGradient)" />
+          )}
+
+          {linePath && (
+            <path
+              d={linePath}
+              fill="none"
+              stroke="#6478ff"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+
+          {points.map((point) => (
+            <circle
+              key={point.key}
+              cx={point.x}
+              cy={point.y}
+              r="4"
+              fill="#6478ff"
+              stroke="white"
+              strokeWidth="2"
+              vectorEffect="non-scaling-stroke"
+            >
+              <title>
+                {point.fullLabel}: {point.count} new leads
+              </title>
+            </circle>
+          ))}
+        </svg>
+
+        <div className="chart-months">
+          {monthlyData.map((item) => (
+            <span key={item.key} title={`${item.count} new leads`}>
+              {item.label}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* LEAD STATUS ANALYTICS */
+
+function LeadStatusAnalytics({ statusCounts, totalLeads }) {
+  const statusColors = {
+    New: "#3b82f6",
+    Contacted: "#f59e0b",
+    Qualified: "#8b5cf6",
+    Won: "#10b981",
+    Lost: "#ef4444",
+  };
+
+  return (
+    <section className="panel lead-status-analytics">
+      <div className="panel-heading">
+        <div>
+          <h2>Lead Status Analytics</h2>
+          <p className="subtitle">
+            Live distribution across your sales pipeline
+          </p>
+        </div>
+
+        <span className="period-tag">{totalLeads} Total Leads</span>
+      </div>
+
+      {totalLeads === 0 ? (
+        <div className="empty-state compact-empty">
+          <strong>No lead data available</strong>
+          <p>Add your first lead to start tracking your sales pipeline.</p>
+        </div>
+      ) : (
+        <div className="status-analytics-grid">
+          {statusCounts.map(({ status, count }) => {
+            const percentage = Math.round((count / totalLeads) * 100);
+
+            return (
+              <div className="status-analytics-card" key={status}>
+                <div className="status-analytics-top">
+                  <span
+                    className="status-analytics-dot"
+                    style={{ backgroundColor: statusColors[status] }}
+                  />
+                  <span>{status}</span>
+                  <strong>{count}</strong>
+                </div>
+
+                <div
+                  className="status-analytics-track"
+                  role="progressbar"
+                  aria-label={`${status} leads`}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={percentage}
+                >
+                  <div
+                    className="status-analytics-fill"
+                    style={{
+                      width: `${percentage}%`,
+                      backgroundColor: statusColors[status],
+                    }}
+                  />
+                </div>
+
+                <div className="status-analytics-bottom">
+                  <span>{percentage}% of total leads</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function App() {
   const [activePage, setActivePage] = useState("Dashboard");
   const [leads, setLeads] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [followUpFilter, setFollowUpFilter] = useState("All");
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [search, setSearch] = useState("");
-  const [notice, setNotice] = useState("");
-  const [form, setForm] = useState({
-    name: "",
-    company: "",
-    email: "",
-    status: "New",
-  });
+  const [formData, setFormData] = useState(emptyForm);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [apiConnected, setApiConnected] = useState(null);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
 
-  // Load leads from MongoDB through the backend API.
-  useEffect(() => {
-    let cancelled = false;
+  async function loadLeads() {
+    setLoading(true);
+    setErrorMessage("");
 
-    async function fetchLeads() {
-      try {
-        const response = await fetch(API_URL);
-        const result = await response.json();
+    try {
+      const response = await fetch(API_URL);
+      const payload = await response.json().catch(() => ({}));
 
-        if (!response.ok || !result.success) {
-          throw new Error(result.message || "Failed to load leads.");
-        }
-
-        if (!cancelled) {
-          setLeads((result.data || []).map(normalizeLead));
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setNotice(
-            `Could not load leads: ${error.message}. Check that the backend is running.`
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+      if (!response.ok) {
+        throw new Error(
+          getErrorMessage(payload, "Could not load leads from the server.")
+        );
       }
+
+      setLeads(getLeadList(payload).map(normalizeLead));
+      setApiConnected(true);
+    } catch (error) {
+      setErrorMessage(
+        error.message ||
+          "Backend unavailable. Please start the backend server."
+      );
+      setApiConnected(false);
+    } finally {
+      setLoading(false);
     }
+  }
 
-    fetchLeads();
+  async function checkBackendHealth() {
+    try {
+      const response = await fetch(HEALTH_URL);
+      const payload = await response.json().catch(() => ({}));
 
-    return () => {
-      cancelled = true;
-    };
+      setApiConnected(
+        response.ok && payload.database === "connected"
+      );
+    } catch {
+      setApiConnected(false);
+    }
+  }
+
+  useEffect(() => {
+    loadLeads();
+    checkBackendHealth();
   }, []);
 
-  function openAddForm() {
-    setEditingId(null);
-    setForm({
-      name: "",
-      company: "",
-      email: "",
-      status: "New",
+  /* BUSINESS METRICS */
+
+  const totalLeads = leads.length;
+
+  const wonLeads = leads.filter((lead) => lead.status === "Won");
+  const lostLeads = leads.filter((lead) => lead.status === "Lost");
+
+  const openDeals = leads.filter(
+    (lead) => !["Won", "Lost"].includes(lead.status)
+  );
+
+  const contactedLeads = leads.filter((lead) =>
+    ["Contacted", "Qualified", "Won"].includes(lead.status)
+  );
+
+  const conversionRate = totalLeads
+    ? Math.round((wonLeads.length / totalLeads) * 100)
+    : 0;
+
+  const wonRevenue = wonLeads.reduce(
+    (sum, lead) => sum + lead.dealValue,
+    0
+  );
+
+  const pipelineValue = openDeals.reduce(
+    (sum, lead) => sum + lead.dealValue,
+    0
+  );
+
+  const totalDealValue = leads.reduce(
+    (sum, lead) => sum + lead.dealValue,
+    0
+  );
+
+  const lostDealValue = lostLeads.reduce(
+    (sum, lead) => sum + lead.dealValue,
+    0
+  );
+
+  const statusCounts = statuses.map((status) => ({
+    status,
+    count: leads.filter((lead) => lead.status === status).length,
+  }));
+
+  /* MONTHLY ANALYTICS: LAST SIX MONTHS */
+
+  const monthlyData = useMemo(() => {
+    const now = new Date();
+
+    const months = Array.from({ length: 6 }, (_, index) => {
+      const date = new Date(
+        now.getFullYear(),
+        now.getMonth() - 5 + index,
+        1
+      );
+
+      return {
+        key: `${date.getFullYear()}-${date.getMonth()}`,
+        year: date.getFullYear(),
+        month: date.getMonth(),
+        label: date.toLocaleDateString("en-IN", {
+          month: "short",
+        }),
+        fullLabel: date.toLocaleDateString("en-IN", {
+          month: "long",
+          year: "numeric",
+        }),
+        count: 0,
+      };
     });
+
+    leads.forEach((lead) => {
+      if (!lead.createdAt) return;
+
+      const date = new Date(lead.createdAt);
+      if (Number.isNaN(date.getTime())) return;
+
+      const bucket = months.find(
+        (month) =>
+          month.year === date.getFullYear() &&
+          month.month === date.getMonth()
+      );
+
+      if (bucket) bucket.count += 1;
+    });
+
+    return months;
+  }, [leads]);
+
+  const currentMonthCount =
+    monthlyData[monthlyData.length - 1]?.count || 0;
+
+  const previousMonthCount =
+    monthlyData[monthlyData.length - 2]?.count || 0;
+
+  const monthlyChange = currentMonthCount - previousMonthCount;
+
+  /* FOLLOW-UP REMINDERS */
+
+  const reminders = useMemo(() => {
+    return leads
+      .filter(
+        (lead) =>
+          lead.followUpAt &&
+          !["Won", "Lost"].includes(lead.status)
+      )
+      .sort(
+        (a, b) =>
+          new Date(a.followUpAt).getTime() -
+          new Date(b.followUpAt).getTime()
+      );
+  }, [leads]);
+
+  const overdueReminders = reminders.filter(
+    (lead) => getFollowUpState(lead.followUpAt) === "overdue"
+  );
+
+  const upcomingReminders = reminders.filter(
+    (lead) => getFollowUpState(lead.followUpAt) === "upcoming"
+  );
+
+  /* SEARCH AND FILTERS */
+
+  const filteredLeads = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+
+    return leads.filter((lead) => {
+      const matchesSearch =
+        !query ||
+        [
+          lead.name,
+          lead.company,
+          lead.email,
+          lead.status,
+          lead.followUpNotes,
+        ].some((value) =>
+          String(value || "").toLowerCase().includes(query)
+        );
+
+      const matchesStatus =
+        statusFilter === "All" || lead.status === statusFilter;
+
+      const followUpState = getFollowUpState(lead.followUpAt);
+
+      const matchesFollowUp =
+        followUpFilter === "All" ||
+        followUpState === followUpFilter;
+
+      let matchesPage = true;
+
+      if (activePage === "Customers") {
+        matchesPage = lead.status === "Won";
+      } else if (activePage === "Deals") {
+        matchesPage = !["Won", "Lost"].includes(lead.status);
+      }
+
+      return (
+        matchesSearch &&
+        matchesStatus &&
+        matchesFollowUp &&
+        matchesPage
+      );
+    });
+  }, [
+    leads,
+    searchTerm,
+    statusFilter,
+    followUpFilter,
+    activePage,
+  ]);
+
+  /* CREATE AND EDIT */
+
+  function openCreateForm() {
+    setEditingId(null);
+    setFormData({ ...emptyForm });
+    setErrorMessage("");
+    setSuccessMessage("");
     setShowForm(true);
-    setNotice("");
   }
 
   function openEditForm(lead) {
     setEditingId(lead.id);
-    setForm({
+
+    setFormData({
       name: lead.name,
       company: lead.company,
       email: lead.email,
       status: lead.status,
+      followUpAt: toLocalDateTimeInput(lead.followUpAt),
+      followUpNotes: lead.followUpNotes || "",
+      dealValue: String(lead.dealValue ?? 0),
     });
+
+    setErrorMessage("");
+    setSuccessMessage("");
     setShowForm(true);
-    setNotice("");
   }
 
   function closeForm() {
     setShowForm(false);
     setEditingId(null);
-    setForm({
-      name: "",
-      company: "",
-      email: "",
-      status: "New",
-    });
+    setFormData({ ...emptyForm });
   }
 
-  // Create a lead or update an existing lead in MongoDB.
-  async function saveLead(event) {
+  function handleFormChange(event) {
+    const { name, value } = event.target;
+
+    setFormData((previous) => ({
+      ...previous,
+      [name]: value,
+    }));
+  }
+
+  async function handleSubmit(event) {
     event.preventDefault();
-
-    const cleanLead = {
-      name: form.name.trim(),
-      company: form.company.trim(),
-      email: form.email.trim(),
-      status: form.status,
-    };
-
-    if (!cleanLead.name || !cleanLead.company || !cleanLead.email) {
-      setNotice("Please fill in all required fields.");
-      return;
-    }
+    setSaving(true);
+    setErrorMessage("");
+    setSuccessMessage("");
 
     try {
-      setSaving(true);
+      const isEditing = Boolean(editingId);
 
-      const isEditing = editingId !== null;
-      const response = await fetch(
-        isEditing ? `${API_URL}/${editingId}` : API_URL,
-        {
-          method: isEditing ? "PUT" : "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(cleanLead),
-        }
-      );
+      const url = isEditing
+        ? `${API_URL}/${encodeURIComponent(editingId)}`
+        : API_URL;
 
-      const result = await response.json();
+      const numericDealValue = Number(formData.dealValue);
 
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "Could not save lead.");
+      if (
+        !Number.isFinite(numericDealValue) ||
+        numericDealValue < 0
+      ) {
+        throw new Error(
+          "Deal value must be a valid non-negative amount."
+        );
       }
 
-      const savedLead = normalizeLead(result.data);
+      const response = await fetch(url, {
+        method: isEditing ? "PUT" : "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: formData.name.trim(),
+          company: formData.company.trim(),
+          email: formData.email.trim(),
+          status: formData.status,
+          followUpAt: formData.followUpAt
+            ? new Date(formData.followUpAt).toISOString()
+            : null,
+          followUpNotes: formData.followUpNotes.trim(),
+          dealValue: numericDealValue,
+        }),
+      });
 
-      if (isEditing) {
-        setLeads((previous) =>
-          previous.map((lead) =>
-            lead.id === savedLead.id ? savedLead : lead
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          getErrorMessage(
+            payload,
+            isEditing
+              ? "Could not update the lead."
+              : "Could not create the lead."
           )
         );
-        setNotice("Lead updated successfully in MongoDB.");
-      } else {
-        setLeads((previous) => [savedLead, ...previous]);
-        setNotice("Lead added successfully to MongoDB.");
       }
 
+      await loadLeads();
       closeForm();
-      setActivePage("Leads");
-      setSearch("");
+
+      setSuccessMessage(
+        isEditing
+          ? "Lead updated successfully."
+          : "New lead added successfully."
+      );
     } catch (error) {
-      setNotice(`Save failed: ${error.message}`);
+      setErrorMessage(
+        error.message || "Something went wrong while saving the lead."
+      );
     } finally {
       setSaving(false);
     }
   }
 
-  // Delete a lead from MongoDB.
-  async function deleteLead(id) {
-    const lead = leads.find((item) => item.id === id);
-    if (!lead) return;
+  /* UPDATE STATUS */
 
+  async function updateLeadStatus(lead, nextStatus) {
+    if (lead.status === nextStatus) return;
+
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      const response = await fetch(
+        `${API_URL}/${encodeURIComponent(lead.id)}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            name: lead.name,
+            company: lead.company,
+            email: lead.email,
+            status: nextStatus,
+            followUpAt: lead.followUpAt || null,
+            followUpNotes: lead.followUpNotes || "",
+            dealValue: lead.dealValue,
+          }),
+        }
+      );
+
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          getErrorMessage(payload, "Could not update lead status.")
+        );
+      }
+
+      setLeads((previous) =>
+        previous.map((item) =>
+          item.id === lead.id
+            ? { ...item, status: nextStatus }
+            : item
+        )
+      );
+
+      setSuccessMessage(`Lead status changed to ${nextStatus}.`);
+    } catch (error) {
+      setErrorMessage(error.message || "Status update failed.");
+      await loadLeads();
+    }
+  }
+
+  /* DELETE LEAD */
+
+  async function deleteLead(lead) {
     if (
       !window.confirm(
-        `Delete lead "${lead.name}"? This cannot be undone.`
+        `Are you sure you want to delete ${lead.name || "this lead"}?`
       )
     ) {
       return;
     }
 
+    setErrorMessage("");
+    setSuccessMessage("");
+
     try {
-      const response = await fetch(`${API_URL}/${id}`, {
-        method: "DELETE",
-      });
+      const response = await fetch(
+        `${API_URL}/${encodeURIComponent(lead.id)}`,
+        { method: "DELETE" }
+      );
 
-      const result = await response.json();
+      const payload = await response.json().catch(() => ({}));
 
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "Could not delete lead.");
+      if (!response.ok) {
+        throw new Error(
+          getErrorMessage(payload, "Could not delete the lead.")
+        );
       }
 
       setLeads((previous) =>
-        previous.filter((item) => item.id !== id)
+        previous.filter((item) => item.id !== lead.id)
       );
 
-      setNotice("Lead deleted successfully from MongoDB.");
+      setSuccessMessage("Lead deleted successfully.");
     } catch (error) {
-      setNotice(`Delete failed: ${error.message}`);
+      setErrorMessage(error.message || "Delete failed.");
     }
   }
 
-  // Save status changes to MongoDB.
-  async function updateStatus(id, status) {
-    try {
-      const response = await fetch(`${API_URL}/${id}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ status }),
-      });
+  /* EXPORT CSV */
 
-      const result = await response.json();
+  function exportCSV() {
+    const headers = [
+      "Name",
+      "Company",
+      "Email",
+      "Status",
+      "Deal Value INR",
+      "Follow-up Date",
+      "Follow-up Notes",
+      "Created At",
+    ];
 
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "Could not update status.");
-      }
+    const rows = leads.map((lead) => [
+      lead.name,
+      lead.company,
+      lead.email,
+      lead.status,
+      lead.dealValue,
+      lead.followUpAt
+        ? new Date(lead.followUpAt).toISOString()
+        : "",
+      lead.followUpNotes,
+      lead.createdAt
+        ? new Date(lead.createdAt).toISOString()
+        : "",
+    ]);
 
-      const updatedLead = normalizeLead(result.data);
+    const escapeCSV = (value) =>
+      `"${String(value ?? "").replace(/"/g, '""')}"`;
 
-      setLeads((previous) =>
-        previous.map((lead) =>
-          lead.id === updatedLead.id ? updatedLead : lead
-        )
-      );
+    const csv = [headers, ...rows]
+      .map((row) => row.map(escapeCSV).join(","))
+      .join("\r\n");
 
-      setNotice("Lead status updated successfully in MongoDB.");
-    } catch (error) {
-      setNotice(`Status update failed: ${error.message}`);
-    }
+    const blob = new Blob(["\uFEFF" + csv], {
+      type: "text/csv;charset=utf-8;",
+    });
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = `enterprise-crm-leads-${new Date()
+      .toISOString()
+      .slice(0, 10)}.csv`;
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+
+    setSuccessMessage(
+      `${leads.length} lead record(s) exported to CSV.`
+    );
   }
 
-  const filteredLeads = leads.filter((lead) =>
-    `${lead.name} ${lead.company} ${lead.email} ${lead.status}`
-      .toLowerCase()
-      .includes(search.trim().toLowerCase())
-  );
+  const pageTitle = {
+    Dashboard: "Dashboard",
+    Leads: "Lead Management",
+    Customers: "Customers",
+    Deals: "Open Deals",
+    Analytics: "Analytics & Reports",
+  }[activePage];
 
-  const displayedLeads = filteredLeads.filter((lead) => {
-    if (activePage === "Customers") return lead.status === "Won";
-    if (activePage === "Deals") {
-      return !["Won", "Lost"].includes(lead.status);
+  /* REMINDER PANEL */
+
+  function renderReminderPanel() {
+    const items = [
+      ...overdueReminders,
+      ...upcomingReminders,
+    ].slice(0, 6);
+
+    return (
+      <section className="panel source-panel reminder-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Follow-up Reminders</h2>
+            <p className="subtitle">
+              Scheduled follow-ups for open leads
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActivePage("Leads");
+              setStatusFilter("All");
+              setFollowUpFilter("All");
+              setSearchTerm("");
+            }}
+          >
+            View leads →
+          </button>
+        </div>
+
+        <div className="reminder-summary">
+          <div>
+            <strong className="reminder-overdue">
+              {overdueReminders.length}
+            </strong>
+            <span>Overdue</span>
+          </div>
+
+          <div>
+            <strong className="reminder-upcoming">
+              {upcomingReminders.length}
+            </strong>
+            <span>Upcoming</span>
+          </div>
+        </div>
+
+        {items.length === 0 ? (
+          <div className="empty-state compact-empty">
+            <strong>No follow-ups scheduled</strong>
+            <p>
+              Add a follow-up date when creating or editing a lead.
+            </p>
+          </div>
+        ) : (
+          <div className="reminder-list">
+            {items.map((lead) => {
+              const state = getFollowUpState(lead.followUpAt);
+
+              return (
+                <div className="reminder-item" key={lead.id}>
+                  <div className="mini-avatar">
+                    {getInitials(lead.name)}
+                  </div>
+
+                  <div className="reminder-details">
+                    <strong>{lead.name}</strong>
+                    <span>{formatDateTime(lead.followUpAt)}</span>
+
+                    {lead.followUpNotes && (
+                      <p>{lead.followUpNotes}</p>
+                    )}
+                  </div>
+
+                  <span className={`reminder-badge ${state}`}>
+                    {state === "overdue" ? "Overdue" : "Upcoming"}
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={() => openEditForm(lead)}
+                  >
+                    Edit
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  /* LEADS TABLE */
+
+  function renderLeadTable() {
+    if (loading) {
+      return (
+        <div className="empty-state">
+          Loading leads from database...
+        </div>
+      );
     }
-    return true;
-  });
 
-  const customers = leads.filter((lead) => lead.status === "Won");
-  const openDeals = leads.filter(
-    (lead) => !["Won", "Lost"].includes(lead.status)
-  );
-  const wonCount = customers.length;
-  const conversionRate = leads.length
-    ? Math.round((wonCount / leads.length) * 100)
-    : 0;
+    if (filteredLeads.length === 0) {
+      return (
+        <div className="empty-state">
+          <div style={{ fontSize: 30, marginBottom: 10 }}>♧</div>
+          <strong>No leads found</strong>
+          <p>
+            {leads.length === 0
+              ? "Add your first lead to start tracking your CRM activity."
+              : "Try changing your search term or filters."}
+          </p>
 
-  const stats = [
-    {
-      label: "Total Leads",
-      value: leads.length,
-      icon: "♙",
-      change: "All recorded leads",
-      color: "blue",
-    },
-    {
-      label: "Customers",
-      value: customers.length,
-      icon: "♧",
-      change: "Converted leads",
-      color: "green",
-    },
-    {
-      label: "Open Deals",
-      value: openDeals.length,
-      icon: "◇",
-      change: "Active pipeline",
-      color: "purple",
-    },
-    {
-      label: "Conversion Rate",
-      value: `${conversionRate}%`,
-      icon: "%",
-      change: "Won leads / total leads",
-      color: "orange",
-    },
-  ];
+          {activePage !== "Customers" && (
+            <button
+              type="button"
+              className="primary-button"
+              onClick={openCreateForm}
+            >
+              + Add New Lead
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div
+        className="table-wrap"
+        style={{
+          width: "100%",
+          overflowX: "auto",
+          display: "block",
+        }}
+      >
+        <table
+          style={{
+            width: "100%",
+            minWidth: 900,
+            borderCollapse: "collapse",
+            tableLayout: "auto",
+            display: "table",
+          }}
+        >
+          <thead>
+            <tr style={{ display: "table-row" }}>
+              {[
+                "Contact",
+                "Company",
+                "Status",
+                "Deal Value",
+                "Follow-up",
+                "Created",
+                "Actions",
+              ].map((heading) => (
+                <th
+                  key={heading}
+                  scope="col"
+                  style={{
+                    display: "table-cell",
+                    textAlign: "left",
+                    padding: "12px 14px",
+                    whiteSpace: "nowrap",
+                    verticalAlign: "middle",
+                  }}
+                >
+                  {heading}
+                </th>
+              ))}
+            </tr>
+          </thead>
+
+          <tbody>
+            {filteredLeads.map((lead) => {
+              const followUpState = getFollowUpState(
+                lead.followUpAt
+              );
+
+              return (
+                <tr
+                  key={lead.id}
+                  style={{ display: "table-row" }}
+                >
+                  <td
+                    style={{
+                      display: "table-cell",
+                      padding: "12px 14px",
+                      verticalAlign: "middle",
+                    }}
+                  >
+                    <div className="contact-cell">
+                      <div className="mini-avatar">
+                        {getInitials(lead.name)}
+                      </div>
+
+                      <div>
+                        <strong>{lead.name || "Unnamed lead"}</strong>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            opacity: 0.7,
+                            overflowWrap: "anywhere",
+                          }}
+                        >
+                          {lead.email || "No email"}
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+
+                  <td
+                    style={{
+                      display: "table-cell",
+                      padding: "12px 14px",
+                      verticalAlign: "middle",
+                    }}
+                  >
+                    {lead.company || "—"}
+                  </td>
+
+                  <td
+                    style={{
+                      display: "table-cell",
+                      padding: "12px 14px",
+                      verticalAlign: "middle",
+                    }}
+                  >
+                    <select
+                      aria-label={`Status for ${lead.name}`}
+                      value={lead.status}
+                      onChange={(event) =>
+                        updateLeadStatus(lead, event.target.value)
+                      }
+                      style={{
+                        display: "inline-block",
+                        width: "auto",
+                        maxWidth: 140,
+                        padding: "6px 8px",
+                        borderRadius: 8,
+                        border: "1px solid #dfe3eb",
+                        background: "white",
+                        color: "#1f2937",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {statuses.map((status) => (
+                        <option value={status} key={status}>
+                          {status}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+
+                  <td
+                    style={{
+                      display: "table-cell",
+                      padding: "12px 14px",
+                      verticalAlign: "middle",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    <strong>{formatCurrency(lead.dealValue)}</strong>
+                  </td>
+
+                  <td
+                    style={{
+                      display: "table-cell",
+                      padding: "12px 14px",
+                      verticalAlign: "middle",
+                    }}
+                  >
+                    {lead.followUpAt ? (
+                      <div className="table-followup">
+                        <span>{formatDate(lead.followUpAt)}</span>
+                        <span
+                          className={`reminder-badge ${followUpState}`}
+                        >
+                          {followUpState === "overdue"
+                            ? "Overdue"
+                            : "Upcoming"}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="muted-text">
+                        Not scheduled
+                      </span>
+                    )}
+                  </td>
+
+                  <td
+                    style={{
+                      display: "table-cell",
+                      padding: "12px 14px",
+                      verticalAlign: "middle",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {formatDate(lead.createdAt)}
+                  </td>
+
+                  <td
+                    style={{
+                      display: "table-cell",
+                      padding: "12px 14px",
+                      verticalAlign: "middle",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => openEditForm(lead)}
+                        aria-label={`Edit ${lead.name}`}
+                      >
+                        Edit
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => deleteLead(lead)}
+                        aria-label={`Delete ${lead.name}`}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  /* LEAD LIST PANEL */
+
+  function renderLeadListPanel(title = "Recent Leads") {
+    return (
+      <section className="panel leads-panel">
+        <div className="leads-heading">
+          <div>
+            <h2>{title}</h2>
+            <p className="subtitle">
+              {filteredLeads.length} record
+              {filteredLeads.length === 1 ? "" : "s"} shown
+            </p>
+          </div>
+
+          <div className="lead-toolbar">
+            <input
+              className="search-input"
+              type="search"
+              placeholder="Search leads..."
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              aria-label="Search leads"
+            />
+
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+              aria-label="Filter leads by status"
+            >
+              <option value="All">All statuses</option>
+              {statuses.map((status) => (
+                <option value={status} key={status}>
+                  {status}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={followUpFilter}
+              onChange={(event) =>
+                setFollowUpFilter(event.target.value)
+              }
+              aria-label="Filter by follow-up"
+            >
+              <option value="All">All follow-ups</option>
+              <option value="upcoming">Upcoming</option>
+              <option value="overdue">Overdue</option>
+              <option value="unscheduled">Not scheduled</option>
+            </select>
+
+            <button type="button" onClick={exportCSV}>
+              Export CSV ↓
+            </button>
+
+            <button
+              type="button"
+              className="primary-button"
+              onClick={openCreateForm}
+            >
+              + Add Lead
+            </button>
+          </div>
+        </div>
+
+        {renderLeadTable()}
+      </section>
+    );
+  }
+
+  /* DASHBOARD */
+
+  function renderDashboard() {
+    return (
+      <>
+        <div className="welcome-row">
+          <div>
+            <div className="eyebrow">OVERVIEW</div>
+            <h1>Welcome to your CRM</h1>
+            <p className="subtitle">
+              Track your leads, customers and sales pipeline in one place.
+            </p>
+          </div>
+
+          <div className="welcome-actions">
+            <button type="button" onClick={exportCSV}>
+              Export CSV ↓
+            </button>
+
+            <button
+              type="button"
+              className="primary-button"
+              onClick={openCreateForm}
+            >
+              + Add New Lead
+            </button>
+          </div>
+        </div>
+
+        <div className="stats-grid">
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Total Leads</span>
+              <span className="stat-icon">♙</span>
+            </div>
+            <h2>{totalLeads}</h2>
+            <p className="subtitle">All saved lead records</p>
+          </div>
+
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Customers Won</span>
+              <span className="stat-icon">♧</span>
+            </div>
+            <h2>{wonLeads.length}</h2>
+            <p className="subtitle">Leads marked Won</p>
+          </div>
+
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Open Deals</span>
+              <span className="stat-icon">◇</span>
+            </div>
+            <h2>{openDeals.length}</h2>
+            <p className="subtitle">
+              {formatCurrency(pipelineValue)} pipeline value
+            </p>
+          </div>
+
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Conversion Rate</span>
+              <span className="stat-icon">↗</span>
+            </div>
+            <h2>{conversionRate}%</h2>
+            <p className="subtitle">Won leads ÷ total leads</p>
+          </div>
+        </div>
+
+        <div className="stats-grid financial-stats">
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Won Revenue</span>
+              <span className="stat-icon">₹</span>
+            </div>
+            <h2>{formatCurrency(wonRevenue)}</h2>
+            <p className="subtitle">Total value of Won deals</p>
+          </div>
+
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Total Deal Value</span>
+              <span className="stat-icon">◈</span>
+            </div>
+            <h2>{formatCurrency(totalDealValue)}</h2>
+            <p className="subtitle">All recorded deal values</p>
+          </div>
+
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Overdue Follow-ups</span>
+              <span className="stat-icon">!</span>
+            </div>
+            <h2>{overdueReminders.length}</h2>
+            <p className="subtitle">Open leads needing attention</p>
+          </div>
+
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Upcoming Follow-ups</span>
+              <span className="stat-icon">◷</span>
+            </div>
+            <h2>{upcomingReminders.length}</h2>
+            <p className="subtitle">Scheduled next steps</p>
+          </div>
+        </div>
+
+        <div className="dashboard-grid">
+          <section className="panel performance-panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Lead Activity</h2>
+                <p className="subtitle">
+                  New leads created per month
+                </p>
+              </div>
+              <span className="period-tag">Last 6 months</span>
+            </div>
+
+            <MonthlyLeadChart monthlyData={monthlyData} />
+
+            <p className="subtitle" style={{ fontSize: 12 }}>
+              Current month: {currentMonthCount} new lead
+              {currentMonthCount === 1 ? "" : "s"}
+              {monthlyChange !== 0 &&
+                ` · ${monthlyChange > 0 ? "+" : ""}${monthlyChange} vs previous month`}
+            </p>
+          </section>
+
+          <section className="panel source-panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Lead Status</h2>
+                <p className="subtitle">
+                  Current database distribution
+                </p>
+              </div>
+            </div>
+
+            <div className="overview-number">{totalLeads}</div>
+            <p className="subtitle">Total records</p>
+
+            {statusCounts.map((item) => {
+              const percentage = totalLeads
+                ? Math.round((item.count / totalLeads) * 100)
+                : 0;
+
+              return (
+                <div className="source-row" key={item.status}>
+                  <div className="source-label">
+                    <span>{item.status}</span>
+                    <span>
+                      {item.count} ({percentage}%)
+                    </span>
+                  </div>
+
+                  <div className="progress-track">
+                    <div
+                      className="progress-fill"
+                      style={{ width: `${percentage}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </section>
+        </div>
+
+        <LeadStatusAnalytics
+          statusCounts={statusCounts}
+          totalLeads={totalLeads}
+        />
+
+        {renderReminderPanel()}
+        {renderLeadListPanel("Recent Leads")}
+      </>
+    );
+  }
+
+  /* ANALYTICS AND REPORTS */
+
+  function renderAnalytics() {
+    return (
+      <>
+        <div className="welcome-row">
+          <div>
+            <div className="eyebrow">REPORTING</div>
+            <h1>Analytics & Reports</h1>
+            <p className="subtitle">
+              Business metrics calculated from your saved CRM records.
+            </p>
+          </div>
+
+          <button type="button" onClick={exportCSV}>
+            Export CSV ↓
+          </button>
+        </div>
+
+        <div className="stats-grid">
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Total Leads</span>
+              <span className="stat-icon">♙</span>
+            </div>
+            <h2>{totalLeads}</h2>
+            <p className="subtitle">All lead records</p>
+          </div>
+
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Won Revenue</span>
+              <span className="stat-icon">₹</span>
+            </div>
+            <h2>{formatCurrency(wonRevenue)}</h2>
+            <p className="subtitle">Value of Won deals</p>
+          </div>
+
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Open Pipeline</span>
+              <span className="stat-icon">◇</span>
+            </div>
+            <h2>{formatCurrency(pipelineValue)}</h2>
+            <p className="subtitle">Potential open deal value</p>
+          </div>
+
+          <div className="stat-card">
+            <div className="stat-top">
+              <span>Conversion Rate</span>
+              <span className="stat-icon">%</span>
+            </div>
+            <h2>{conversionRate}%</h2>
+            <p className="subtitle">Won leads ÷ total leads</p>
+          </div>
+        </div>
+
+        <section className="panel performance-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Monthly Lead Activity</h2>
+              <p className="subtitle">
+                Number of leads created during each month
+              </p>
+            </div>
+            <span className="period-tag">Last 6 months</span>
+          </div>
+
+          <MonthlyLeadChart monthlyData={monthlyData} />
+
+          <p className="subtitle" style={{ fontSize: 12 }}>
+            This month: {currentMonthCount} new lead
+            {currentMonthCount === 1 ? "" : "s"}
+            {monthlyChange !== 0 &&
+              ` · ${monthlyChange > 0 ? "+" : ""}${monthlyChange} compared with last month`}
+          </p>
+        </section>
+
+        <LeadStatusAnalytics
+          statusCounts={statusCounts}
+          totalLeads={totalLeads}
+        />
+
+        <section className="panel source-panel analytics-revenue-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Revenue & Pipeline</h2>
+              <p className="subtitle">
+                Amounts calculated from each lead's deal value.
+              </p>
+            </div>
+          </div>
+
+          <div className="revenue-breakdown">
+            <div>
+              <span>Won revenue</span>
+              <strong>{formatCurrency(wonRevenue)}</strong>
+              <p className="subtitle">{wonLeads.length} won deal(s)</p>
+            </div>
+
+            <div>
+              <span>Open pipeline</span>
+              <strong>{formatCurrency(pipelineValue)}</strong>
+              <p className="subtitle">{openDeals.length} open deal(s)</p>
+            </div>
+
+            <div>
+              <span>Lost deal value</span>
+              <strong>{formatCurrency(lostDealValue)}</strong>
+              <p className="subtitle">{lostLeads.length} lost lead(s)</p>
+            </div>
+          </div>
+
+          <p className="subtitle" style={{ marginTop: 16 }}>
+            Note: Won revenue represents the recorded value of deals
+            marked Won; it is not proof of payment received.
+          </p>
+        </section>
+
+        <section
+          className="panel source-panel"
+          style={{ marginTop: 20 }}
+        >
+          <div className="panel-heading">
+            <div>
+              <h2>Pipeline Summary</h2>
+              <p className="subtitle">
+                Live counts from the leads collection
+              </p>
+            </div>
+          </div>
+
+          {statusCounts.map((item) => (
+            <div className="source-row" key={item.status}>
+              <div className="source-label">
+                <span>{item.status}</span>
+                <strong>{item.count}</strong>
+              </div>
+
+              <div className="progress-track">
+                <div
+                  className="progress-fill"
+                  style={{
+                    width: `${
+                      totalLeads
+                        ? (item.count / totalLeads) * 100
+                        : 0
+                    }%`,
+                  }}
+                />
+              </div>
+            </div>
+          ))}
+        </section>
+
+        {renderReminderPanel()}
+      </>
+    );
+  }
+
+  /* MAIN LAYOUT */
 
   return (
     <div className="crm-app">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-logo">E</div>
+          <div className="brand-mark">C</div>
           <div>
-            <h2>Enterprise CRM</h2>
-            <span>BUSINESS MANAGER</span>
+            <strong>Enterprise CRM</strong>
+            <div className="subtitle">Management Suite</div>
           </div>
         </div>
 
-        <p className="menu-label">WORKSPACE</p>
+        <div className="menu-label">WORKSPACE</div>
 
         <nav>
           {navItems.map((item) => (
@@ -311,31 +1608,48 @@ function App() {
               }`}
               onClick={() => {
                 setActivePage(item.name);
-                setShowForm(false);
-                setSearch("");
-                setNotice("");
+                setSearchTerm("");
+                setStatusFilter("All");
+                setFollowUpFilter("All");
+                setErrorMessage("");
+                setSuccessMessage("");
               }}
             >
               <span className="nav-icon">{item.icon}</span>
-              {item.name}
+              <span>{item.name}</span>
+
+              {item.name === "Leads" && (
+                <span className="nav-count">{totalLeads}</span>
+              )}
             </button>
           ))}
         </nav>
 
         <div className="sidebar-bottom">
           <div className="help-card">
-            <div className="help-icon">✦</div>
-            <strong>CRM Workspace</strong>
-            <p>Manage your leads and grow your business.</p>
+            <strong>Need help?</strong>
+            <p className="subtitle">
+              Manage leads, schedule follow-ups and track your sales pipeline.
+            </p>
+
+            <button
+              type="button"
+              onClick={() =>
+                window.alert(
+                  "Tip: Add a follow-up date and deal value when creating or editing a lead. Export your leads from the CSV button."
+                )
+              }
+            >
+              Quick tip →
+            </button>
           </div>
 
           <div className="profile">
-            <div className="avatar">AR</div>
-            <div className="profile-info">
-              <strong>Aryan Raj</strong>
-              <span>Workspace Admin</span>
+            <div className="mini-avatar">AR</div>
+            <div>
+              <strong>CRM Admin</strong>
+              <div className="subtitle">Workspace</div>
             </div>
-            <span>⋯</span>
           </div>
         </div>
       </aside>
@@ -343,508 +1657,291 @@ function App() {
       <main className="main-content">
         <header className="topbar">
           <div className="breadcrumb">
-            Workspace <span>/</span> {activePage}
+            Workspace <span>/</span> <strong>{pageTitle}</strong>
           </div>
 
           <div className="top-actions">
             <span className="live-status">
-              <i /> MongoDB connected through API
+              <span
+                className="status-dot"
+                style={{
+                  display: "inline-block",
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  marginRight: 7,
+                  background:
+                    apiConnected === true
+                      ? "#16a34a"
+                      : apiConnected === false
+                        ? "#dc2626"
+                        : "#d97706",
+                }}
+              />
+
+              {apiConnected === true
+                ? "MongoDB connected"
+                : apiConnected === false
+                  ? "Backend unavailable"
+                  : "Checking connection..."}
             </span>
+
             <button
               type="button"
               className="notification"
-              aria-label="Notifications"
-              title="No new notifications"
+              title="Refresh data"
+              aria-label="Refresh CRM data"
+              onClick={() => {
+                loadLeads();
+                checkBackendHealth();
+              }}
             >
-              ♧
+              ↻
             </button>
-            <div className="top-avatar">AR</div>
           </div>
         </header>
 
-        <section className="page-content">
-          <div className="welcome-row">
-            <div>
-              <p className="eyebrow">YOUR BUSINESS AT A GLANCE</p>
-              <h1>
-                {activePage === "Dashboard"
-                  ? "Welcome back, Aryan 👋"
-                  : activePage}
-              </h1>
-              <p className="subtitle">
-                {activePage === "Dashboard"
-                  ? "Here’s what’s happening with your business today."
-                  : `Manage and track your ${activePage.toLowerCase()} in one place.`}
-              </p>
+        <div className="page-content">
+          {errorMessage && (
+            <div role="alert" className="app-message error-message">
+              {errorMessage}
             </div>
+          )}
 
-            <button
-              type="button"
-              className="primary-button"
-              onClick={openAddForm}
-            >
-              <span>＋</span> Add New Lead
-            </button>
-          </div>
+          {successMessage && (
+            <div role="status" className="app-message success-message">
+              {successMessage}
+            </div>
+          )}
 
-          {notice && (
-            <div
-              role="status"
-              style={{
-                padding: "10px 14px",
-                marginBottom: 16,
-                borderRadius: 8,
-                background: "#eef5ff",
-                color: "#244a8f",
-              }}
-            >
-              {notice}
+          {activePage === "Dashboard" && renderDashboard()}
+
+          {activePage === "Leads" && (
+            <>
+              <div className="welcome-row">
+                <div>
+                  <div className="eyebrow">CRM WORKSPACE</div>
+                  <h1>Lead Management</h1>
+                  <p className="subtitle">
+                    Create, search, update and manage your leads.
+                  </p>
+                </div>
+
+                <button type="button" onClick={exportCSV}>
+                  Export CSV ↓
+                </button>
+              </div>
+
+              {renderLeadListPanel("All Leads")}
+            </>
+          )}
+
+          {activePage === "Customers" && (
+            <>
+              <div className="welcome-row">
+                <div>
+                  <div className="eyebrow">RELATIONSHIPS</div>
+                  <h1>Customers</h1>
+                  <p className="subtitle">
+                    Leads whose current status is Won.
+                  </p>
+                </div>
+              </div>
+
+              {renderLeadListPanel("Converted Customers")}
+            </>
+          )}
+
+          {activePage === "Deals" && (
+            <>
+              <div className="welcome-row">
+                <div>
+                  <div className="eyebrow">SALES PIPELINE</div>
+                  <h1>Open Deals</h1>
+                  <p className="subtitle">
+                    Leads not yet marked Won or Lost.
+                  </p>
+                </div>
+
+                <div>
+                  <strong>
+                    Pipeline value: {formatCurrency(pipelineValue)}
+                  </strong>
+                </div>
+              </div>
+
+              {renderLeadListPanel("Active Pipeline")}
+            </>
+          )}
+
+          {activePage === "Analytics" && renderAnalytics()}
+
+          <footer className="footer">
+            <span>Enterprise CRM System</span>
+            <span>
+              Live lead data · Follow-ups · Revenue analytics · CSV export
+            </span>
+          </footer>
+        </div>
+      </main>
+
+      {/* ADD / EDIT LEAD MODAL */}
+
+      {showForm && (
+        <div
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !saving) {
+              closeForm();
+            }
+          }}
+          className="modal-overlay"
+        >
+          <section
+            className="panel lead-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="lead-form-title"
+          >
+            <div className="form-heading">
+              <div>
+                <h2 id="lead-form-title">
+                  {editingId ? "Edit Lead" : "Add New Lead"}
+                </h2>
+                <p className="subtitle">
+                  {editingId
+                    ? "Update contact, deal and follow-up details."
+                    : "Enter contact details, deal value and follow-up details."}
+                </p>
+              </div>
+
               <button
                 type="button"
-                onClick={() => setNotice("")}
-                aria-label="Dismiss message"
-                style={{
-                  float: "right",
-                  border: 0,
-                  background: "transparent",
-                  cursor: "pointer",
-                }}
+                onClick={closeForm}
+                disabled={saving}
+                aria-label="Close form"
               >
                 ✕
               </button>
             </div>
-          )}
 
-          {showForm && (
-            <form className="lead-form" onSubmit={saveLead}>
-              <div className="form-heading">
-                <div>
-                  <h3>
-                    {editingId !== null ? "Edit lead" : "Add a new lead"}
-                  </h3>
-                  <p>Enter the contact details below.</p>
-                </div>
-                <button
-                  type="button"
-                  className="close-button"
-                  onClick={closeForm}
-                  aria-label="Close form"
-                >
-                  ✕
-                </button>
+            <form onSubmit={handleSubmit} className="lead-form">
+              <div className="form-fields">
+                <label>
+                  Full Name *
+                  <input
+                    name="name"
+                    type="text"
+                    placeholder="Enter full name"
+                    value={formData.name}
+                    onChange={handleFormChange}
+                    required
+                    maxLength={100}
+                  />
+                </label>
+
+                <label>
+                  Company *
+                  <input
+                    name="company"
+                    type="text"
+                    placeholder="Enter company name"
+                    value={formData.company}
+                    onChange={handleFormChange}
+                    required
+                    maxLength={150}
+                  />
+                </label>
+
+                <label>
+                  Email Address *
+                  <input
+                    name="email"
+                    type="email"
+                    placeholder="name@example.com"
+                    value={formData.email}
+                    onChange={handleFormChange}
+                    required
+                    maxLength={254}
+                  />
+                </label>
+
+                <label>
+                  Lead Status
+                  <select
+                    name="status"
+                    value={formData.status}
+                    onChange={handleFormChange}
+                  >
+                    {statuses.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  Deal Value (₹)
+                  <input
+                    name="dealValue"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="e.g. 25000"
+                    value={formData.dealValue}
+                    onChange={handleFormChange}
+                  />
+                </label>
+
+                <label>
+                  Follow-up Date & Time
+                  <input
+                    name="followUpAt"
+                    type="datetime-local"
+                    value={formData.followUpAt}
+                    onChange={handleFormChange}
+                  />
+                </label>
+
+                <label className="full-width-field">
+                  Follow-up Notes
+                  <textarea
+                    name="followUpNotes"
+                    rows="3"
+                    maxLength={1000}
+                    placeholder="What should you discuss with this client?"
+                    value={formData.followUpNotes}
+                    onChange={handleFormChange}
+                  />
+                </label>
               </div>
 
-              <div className="form-fields">
-                <input
-                  placeholder="Full name"
-                  aria-label="Full name"
-                  value={form.name}
-                  onChange={(event) =>
-                    setForm({ ...form, name: event.target.value })
-                  }
-                  required
-                />
-
-                <input
-                  placeholder="Company"
-                  aria-label="Company"
-                  value={form.company}
-                  onChange={(event) =>
-                    setForm({ ...form, company: event.target.value })
-                  }
-                  required
-                />
-
-                <input
-                  type="email"
-                  placeholder="Email address"
-                  aria-label="Email address"
-                  value={form.email}
-                  onChange={(event) =>
-                    setForm({ ...form, email: event.target.value })
-                  }
-                  required
-                />
-
-                <select
-                  aria-label="Lead status"
-                  value={form.status}
-                  onChange={(event) =>
-                    setForm({ ...form, status: event.target.value })
-                  }
-                >
-                  {statuses.map((status) => (
-                    <option key={status} value={status}>
-                      {status}
-                    </option>
-                  ))}
-                </select>
-
+              <div className="form-actions">
                 <button
-                  className="primary-button"
-                  type="submit"
-                  disabled={saving}
-                >
-                  {saving
-                    ? "Saving..."
-                    : editingId !== null
-                      ? "Update Lead"
-                      : "Save Lead"}
-                </button>
-
-                <button
-                  className="close-button"
                   type="button"
                   onClick={closeForm}
                   disabled={saving}
                 >
                   Cancel
                 </button>
+
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={saving}
+                >
+                  {saving
+                    ? "Saving..."
+                    : editingId
+                      ? "Save Changes"
+                      : "Create Lead"}
+                </button>
               </div>
             </form>
-          )}
-
-          {loading && (
-            <div className="panel" style={{ padding: 20 }}>
-              Loading leads from MongoDB...
-            </div>
-          )}
-
-          {!loading && activePage === "Dashboard" && (
-            <>
-              <div className="stats-grid">
-                {stats.map((stat) => (
-                  <div className="stat-card" key={stat.label}>
-                    <div className="stat-top">
-                      <span>{stat.label}</span>
-                      <div className={`stat-icon ${stat.color}`}>
-                        {stat.icon}
-                      </div>
-                    </div>
-                    <h2>{stat.value}</h2>
-                    <p>
-                      <span className="trend">↗</span> {stat.change}
-                    </p>
-                  </div>
-                ))}
-              </div>
-
-              <div className="dashboard-grid">
-                <section className="panel performance-panel">
-                  <div className="panel-heading">
-                    <div>
-                      <h3>Sales Performance</h3>
-                      <p>Illustrative monthly activity</p>
-                    </div>
-                    <span className="period-tag">Last 6 months</span>
-                  </div>
-
-                  <div className="chart">
-                    <div className="chart-y-labels">
-                      <span>100</span>
-                      <span>75</span>
-                      <span>50</span>
-                      <span>25</span>
-                      <span>0</span>
-                    </div>
-                    <div className="chart-area">
-                      {[100, 75, 50, 25, 0].map((n) => (
-                        <div
-                          className="chart-gridline"
-                          key={n}
-                          style={{ bottom: `${n}%` }}
-                        />
-                      ))}
-                      <svg
-                        viewBox="0 0 600 220"
-                        preserveAspectRatio="none"
-                        className="chart-svg"
-                        role="img"
-                        aria-label="Illustrative sales activity chart"
-                      >
-                        <defs>
-                          <linearGradient
-                            id="chartFill"
-                            x1="0"
-                            y1="0"
-                            x2="0"
-                            y2="1"
-                          >
-                            <stop
-                              offset="0%"
-                              stopColor="#5578f7"
-                              stopOpacity=".24"
-                            />
-                            <stop
-                              offset="100%"
-                              stopColor="#5578f7"
-                              stopOpacity="0"
-                            />
-                          </linearGradient>
-                        </defs>
-                        <path
-                          d="M0,170 C50,155 65,120 120,135 S200,175 240,110 S310,120 360,75 S430,105 480,50 S550,70 600,20 L600,220 L0,220 Z"
-                          fill="url(#chartFill)"
-                        />
-                        <path
-                          d="M0,170 C50,155 65,120 120,135 S200,175 240,110 S310,120 360,75 S430,105 480,50 S550,70 600,20"
-                          fill="none"
-                          stroke="#5578f7"
-                          strokeWidth="3"
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      </svg>
-                    </div>
-                    <div className="chart-months">
-                      <span>May</span>
-                      <span>Jun</span>
-                      <span>Jul</span>
-                      <span>Aug</span>
-                      <span>Sep</span>
-                      <span>Oct</span>
-                    </div>
-                  </div>
-                </section>
-
-                <section className="panel source-panel">
-                  <div className="panel-heading">
-                    <div>
-                      <h3>Lead Overview</h3>
-                      <p>Current lead statuses</p>
-                    </div>
-                  </div>
-
-                  <div className="overview-number">
-                    {leads.length}
-                    <span> total leads</span>
-                  </div>
-
-                  {statuses.map((status, index) => {
-                    const count = leads.filter(
-                      (lead) => lead.status === status
-                    ).length;
-
-                    const colors = [
-                      "bar-blue",
-                      "bar-purple",
-                      "bar-orange",
-                      "bar-green",
-                      "bar-orange",
-                    ];
-
-                    return (
-                      <div className="source-row" key={status}>
-                        <div className="source-label">
-                          <span>{status}</span>
-                          <strong>{count}</strong>
-                        </div>
-                        <div className="progress-track">
-                          <div
-                            className={`progress-fill ${colors[index]}`}
-                            style={{
-                              width: `${
-                                leads.length
-                                  ? (count / leads.length) * 100
-                                  : 0
-                              }%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </section>
-              </div>
-            </>
-          )}
-
-          {!loading &&
-            (activePage === "Leads" ||
-              activePage === "Customers" ||
-              activePage === "Deals") && (
-              <section className="panel leads-panel">
-                <div className="panel-heading leads-heading">
-                  <div>
-                    <h3>
-                      {activePage === "Leads"
-                        ? "All Leads"
-                        : activePage === "Customers"
-                          ? "Converted Customers"
-                          : "Sales Pipeline"}
-                    </h3>
-                    <p>
-                      {activePage === "Customers"
-                        ? "Contacts whose lead status is Won."
-                        : activePage === "Deals"
-                          ? "Update statuses as sales opportunities progress."
-                          : "Add, search, edit and manage your leads."}
-                    </p>
-                  </div>
-
-                  <input
-                    className="search-input"
-                    placeholder="Search name, company, email or status..."
-                    aria-label="Search leads"
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                  />
-                </div>
-
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>CONTACT</th>
-                        <th>COMPANY</th>
-                        <th>EMAIL</th>
-                        <th>STATUS</th>
-                        <th>ACTIONS</th>
-                      </tr>
-                    </thead>
-
-                    <tbody>
-                      {displayedLeads.map((lead) => (
-                        <tr key={lead.id}>
-                          <td>
-                            <div className="contact-cell">
-                              <div className="mini-avatar">
-                                {lead.name
-                                  .split(" ")
-                                  .map((part) => part[0])
-                                  .join("")
-                                  .slice(0, 2)
-                                  .toUpperCase()}
-                              </div>
-                              <strong>{lead.name}</strong>
-                            </div>
-                          </td>
-
-                          <td>{lead.company}</td>
-                          <td>{lead.email}</td>
-
-                          <td>
-                            <select
-                              aria-label={`Status for ${lead.name}`}
-                              value={lead.status}
-                              onChange={(event) =>
-                                updateStatus(lead.id, event.target.value)
-                              }
-                              style={{
-                                maxWidth: 130,
-                                padding: "6px 8px",
-                                borderRadius: 8,
-                                border: "1px solid #d9deea",
-                                background: "#fff",
-                              }}
-                            >
-                              {statuses.map((status) => (
-                                <option key={status} value={status}>
-                                  {status}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-
-                          <td>
-                            <div
-                              style={{
-                                display: "flex",
-                                gap: 8,
-                                flexWrap: "wrap",
-                              }}
-                            >
-                              <button
-                                type="button"
-                                onClick={() => openEditForm(lead)}
-                                aria-label={`Edit ${lead.name}`}
-                                style={{
-                                  padding: "6px 10px",
-                                  borderRadius: 7,
-                                  border: "1px solid #ccd7f5",
-                                  background: "#eef3ff",
-                                  color: "#244a9b",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                Edit
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => deleteLead(lead.id)}
-                                aria-label={`Delete ${lead.name}`}
-                                style={{
-                                  padding: "6px 10px",
-                                  borderRadius: 7,
-                                  border: "1px solid #f1caca",
-                                  background: "#fff0f0",
-                                  color: "#a12626",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-
-                  {displayedLeads.length === 0 && (
-                    <p className="empty-state">
-                      No matching records found.
-                    </p>
-                  )}
-
-                  <p
-                    style={{
-                      padding: "12px 4px",
-                      color: "#70798c",
-                      fontSize: 13,
-                    }}
-                  >
-                    Showing {displayedLeads.length} of {leads.length} total
-                    leads.
-                  </p>
-                </div>
-              </section>
-            )}
-
-          {!loading && activePage === "Analytics" && (
-            <section className="panel analytics-panel">
-              <h3>Business Analytics</h3>
-              <p>
-                Total leads: <strong>{leads.length}</strong>
-              </p>
-              <p>
-                Converted customers: <strong>{wonCount}</strong>
-              </p>
-              <p>
-                Open deals: <strong>{openDeals.length}</strong>
-              </p>
-              <p>
-                Lost leads:{" "}
-                <strong>
-                  {leads.filter((lead) => lead.status === "Lost").length}
-                </strong>
-              </p>
-              <p>
-                Conversion rate: <strong>{conversionRate}%</strong>
-              </p>
-              <p className="subtitle">
-                Sales chart and revenue are demo-only. Connect real deal
-                values to calculate actual business revenue.
-              </p>
-            </section>
-          )}
-
-          <footer className="footer">
-            <span>© 2026 Enterprise CRM System</span>
-            <span>Built for smarter business management ✦</span>
-          </footer>
-        </section>
-      </main>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
